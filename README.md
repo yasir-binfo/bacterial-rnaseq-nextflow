@@ -84,8 +84,43 @@ parameters are neither required nor supported.
 
 ### Enable rRNA filtering
 
-`--skip_rrna` defaults to `true`. To run SortMeRNA, set it to `false` and supply
-all six database files:
+`--skip_rrna` defaults to `true`. For bacteria-only samples, the required
+references are bacterial 16S, bacterial 23S, and 5S rRNA. Download the pinned
+legacy separated references distributed with SortMeRNA v4.2.0:
+
+```bash
+mkdir -p databases/sortmerna
+
+curl -L \
+  https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/silva-bac-16s-id90.fasta \
+  -o databases/sortmerna/silva-bac-16s-id90.fasta
+
+curl -L \
+  https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/silva-bac-23s-id98.fasta \
+  -o databases/sortmerna/silva-bac-23s-id98.fasta
+
+curl -L \
+  https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/rfam-5s-database-id98.fasta \
+  -o databases/sortmerna/rfam-5s-database-id98.fasta
+```
+
+Direct downloads:
+
+- [SILVA bacterial 16S, 90% identity](https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/silva-bac-16s-id90.fasta)
+- [SILVA bacterial 23S, 98% identity](https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/silva-bac-23s-id98.fasta)
+- [Rfam 5S, 98% identity](https://raw.githubusercontent.com/biocore/sortmerna/v4.2.0/data/rRNA_databases/rfam-5s-database-id98.fasta)
+
+These three references are suitable for pure bacterial isolates and
+bacteria-only cultures. They are not comprehensive for archaeal, eukaryotic,
+host-associated, or mixed environmental samples. Bacteria do not have 5.8S
+rRNA, so the Rfam 5.8S database is not needed for a bacteria-only workflow.
+
+Current SortMeRNA releases recommend their newer combined default database,
+which includes bacterial, archaeal, and eukaryotic references. See the
+[official SortMeRNA database section](https://github.com/sortmerna/sortmerna#databases)
+if broad contamination screening is desired.
+
+To run filtering with the three bacterial references:
 
 ```bash
 nextflow run workflow.nf \
@@ -94,12 +129,9 @@ nextflow run workflow.nf \
   --anno_file /absolute/path/annotation.gff \
   --outdir results \
   --skip_rrna false \
-  --database1 /db/rfam-5.8s-database-id98.fasta \
-  --database2 /db/rfam-5s-database-id98.fasta \
-  --database3 /db/silva-bac-16s-id90.fasta \
-  --database4 /db/silva-bac-23s-id98.fasta \
-  --database5 /db/silva-arc-16s-id95.fasta \
-  --database6 /db/silva-arc-23s-id98.fasta \
+  --rrna_16s databases/sortmerna/silva-bac-16s-id90.fasta \
+  --rrna_23s databases/sortmerna/silva-bac-23s-id98.fasta \
+  --rrna_5s databases/sortmerna/rfam-5s-database-id98.fasta \
   -resume
 ```
 
@@ -116,7 +148,9 @@ does not delete or share `~/sortmerna` state.
 | `--outdir` | `results` | Published results directory |
 | `--q_score` | `5` | fastp mean-quality cutoff |
 | `--skip_rrna` | `true` | Skip SortMeRNA when true |
-| `--database1` … `--database6` | none | rRNA FASTA files required when filtering |
+| `--rrna_16s` | none | Bacterial 16S rRNA FASTA required when filtering |
+| `--rrna_23s` | none | Bacterial 23S rRNA FASTA required when filtering |
+| `--rrna_5s` | none | 5S rRNA FASTA required when filtering |
 
 ## Outputs
 

@@ -32,12 +32,9 @@ nextflow run workflow.nf \
   --anno_file tests/data/annotation.gff \
   --outdir "${test_dir}/rrna-results" \
   --skip_rrna false \
-  --database1 tests/data/rrna_1.fasta \
-  --database2 tests/data/rrna_2.fasta \
-  --database3 tests/data/rrna_3.fasta \
-  --database4 tests/data/rrna_4.fasta \
-  --database5 tests/data/rrna_5.fasta \
-  --database6 tests/data/rrna_6.fasta
+  --rrna_16s tests/data/rrna_1.fasta \
+  --rrna_23s tests/data/rrna_2.fasta \
+  --rrna_5s tests/data/rrna_3.fasta
 
 test -e "${test_dir}/rrna-results/clean_reads/pe_sample_1_non_rRNA_reads_fwd.fastq"
 test -e "${test_dir}/rrna-results/clean_reads/se_sample_1_non_rRNA_reads.fastq"

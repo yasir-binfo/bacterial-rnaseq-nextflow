@@ -12,12 +12,9 @@ params.anno_file = null
 params.outdir = 'results'
 params.q_score = 5
 params.skip_rrna = true
-params.database1 = null
-params.database2 = null
-params.database3 = null
-params.database4 = null
-params.database5 = null
-params.database6 = null
+params.rrna_16s = null
+params.rrna_23s = null
+params.rrna_5s = null
 
 process TRIM_PE {
     tag "${sample_id}"
@@ -483,9 +480,9 @@ workflow {
         clean_pe = trimmed_pe
         clean_se = trimmed_se
     } else {
-        def database_params = (1..6).collect { params["database${it}"] }
+        def database_params = [params.rrna_16s, params.rrna_23s, params.rrna_5s]
         if (database_params.any { !it }) {
-            error 'Set --database1 through --database6 when --skip_rrna false'
+            error 'Set --rrna_16s, --rrna_23s, and --rrna_5s when --skip_rrna false'
         }
         rrna_databases = Channel.value(
             database_params.collect { file(it, checkIfExists: true) }
