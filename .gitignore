@@ -1,0 +1,36 @@
+# Nextflow runtime files
+.nextflow/
+.nextflow.log*
+work/
+
+# Pipeline outputs
+Omics/
+Expression/
+
+# Input data and large bioinformatics files
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bai
+*.sam
+*.bw
+*.fasta
+*.fasta.gz
+*.fa
+*.fa.gz
+*.fna
+*.fna.gz
+
+# Bowtie 2 indexes
+*.bt2
+*.bt2l
+
+# Python/editor/OS artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+*~
+*.swp
