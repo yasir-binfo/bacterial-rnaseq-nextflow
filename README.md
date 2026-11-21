@@ -193,9 +193,7 @@ workflow is treated as reproducible or production-ready:
 6. Tool versions and resources (`cpus`, memory, time) are not pinned or defined.
 7. Condition extraction in `mean_tpm_calc.py` splits column names on `_`; sample
    IDs or condition names containing underscores can therefore be misclassified.
-8. The duplicate `Scripts_copy/` directory is identical to `Scripts/` and should
-   be removed after confirming it is not needed externally.
-9. The workflow has no automated test data or end-to-end validation test.
+8. The workflow has no automated test data or end-to-end validation test.
 
 ## Reproducibility recommendations
 
