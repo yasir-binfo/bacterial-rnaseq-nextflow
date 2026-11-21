@@ -1,0 +1,16 @@
+name: bacterial-rnaseq-nextflow
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.12
+  - fastp=0.24.1
+  - sortmerna=4.3.7
+  - bowtie2=2.5.4
+  - samtools=1.21
+  - rseqc=5.0.4
+  - subread=2.0.8
+  - deeptools=3.5.6
+  - pandas=2.2.3
+  - numpy=2.1.3

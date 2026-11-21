@@ -1,85 +1,71 @@
 # Bacterial RNA-seq pipeline
 
-A Nextflow workflow for bacterial RNA-seq preprocessing, alignment, gene-level
-quantification, TPM normalization, and condition-level coverage tracks. The
-workflow accepts paired-end (PE), single-end (SE), or mixed PE/SE sample sheets.
+A reproducible Nextflow DSL2 workflow for bacterial RNA-seq trimming, optional
+rRNA depletion, alignment, strand inference, gene-level quantification, TPM
+normalization, and condition-level coverage tracks. It supports paired-end,
+single-end, and mixed-layout sample sheets.
 
-> **Status:** research workflow under review. Read [Known limitations](#known-limitations)
-> before using the results in production analyses.
-
-## Workflow overview
+## Workflow
 
 ```text
 sample sheet
-    |
-    +-- PE/SE trimming (fastp)
-    |
-    +-- optional rRNA filtering (SortMeRNA)
-    |
-    +-- alignment to reference (Bowtie 2)
-    |
-    +-- coordinate-sorted BAM (SAMtools)
-    |
-    +-- strandedness inference (RSeQC)
-    |
-    +-- gene/pseudogene counts (featureCounts)
-    |
-    +-- per-sample TPM + condition mean TPM
-    |
-    `-- condition-level CPM-normalized BigWig (deepTools)
+  -> fastp trimming
+  -> optional SortMeRNA filtering
+  -> Bowtie 2 alignment -> sorted BAM
+  -> RSeQC strand inference
+  -> featureCounts
+  -> effective-length TPM -> condition mean TPM
+  -> condition-level CPM BigWig
 ```
+
+The Bowtie 2 index, annotation, reads, rRNA databases, and repository helper
+scripts are all staged as Nextflow inputs. No process relies on `../../../`, a
+published output from another process, or the directory from which a task runs.
 
 ## Requirements
 
-- Nextflow (the workflow was reviewed with 25.10.2)
-- Java compatible with the installed Nextflow release
-- Python 3 with `pandas` and `numpy`
-- fastp
-- SortMeRNA (only when rRNA filtering is enabled)
-- Bowtie 2
-- SAMtools
-- RSeQC (`infer_experiment.py`)
-- Subread (`featureCounts`)
-- deepTools (`bamCoverage`)
+- Nextflow 25.10.2 or a compatible release
+- Java compatible with that Nextflow release
+- Conda
 
-The current repository does not include a Conda environment, container profile,
-or `nextflow.config`; all programs must therefore be available on `PATH`.
+All analysis tools and Python libraries are pinned in `environment.yml`.
+Nextflow creates and uses that environment automatically. The first run can take
+several minutes while Conda resolves and downloads packages.
 
-## Input files
+For an existing environment that already provides every dependency, use
+`-profile no_conda`.
+
+## Inputs
 
 ### Sample sheet
 
-Supply a CSV file with these exact headers:
+The CSV must have these exact headers:
 
 ```csv
 sample_id,condition,fastq_1,fastq_2
-control_1,control,/absolute/path/control_1_R1.fastq.gz,/absolute/path/control_1_R2.fastq.gz
-treated_1,treated,/absolute/path/treated_1.fastq.gz,
+control_1,control_group,/data/control_1_R1.fastq.gz,/data/control_1_R2.fastq.gz
+treated_1,treated_group,/data/treated_1.fastq.gz,
 ```
 
-- `sample_id` should be unique and safe for use in filenames (letters, numbers,
-  underscores, and hyphens are recommended).
-- `condition` labels are used to group BAM files and calculate mean TPM values.
-- `fastq_1` is required.
-- `fastq_2` is required for paired-end samples and must be empty for single-end
-  samples.
-- Absolute paths are recommended because Nextflow processes run in isolated work
-  directories.
+- `sample_id`, `condition`, and `fastq_1` are required.
+- Leave `fastq_2` empty for single-end samples.
+- IDs and conditions may contain letters, numbers, dots, underscores, and
+  hyphens. Other characters are rejected because condition names become output
+  filenames.
+- Sample IDs must be unique.
+- Absolute FASTQ paths are recommended. Relative paths are resolved from the
+  directory in which Nextflow is launched.
 
 ### Reference and annotation
 
-- `--ref_file`: reference genome in FASTA format.
-- `--anno_file`: annotation in GFF3 format. Quantification currently selects
-  `gene` and `pseudogene` features and groups them by the `locus_tag` attribute.
-  Confirm that those feature types and attributes exist in your annotation.
+- `--ref_file`: reference genome FASTA.
+- `--anno_file`: GFF3 annotation. Quantification selects `gene` and
+  `pseudogene` features and groups them by `locus_tag`. Strand inference uses
+  `CDS` features and their `Parent` attribute.
 
-### SortMeRNA databases
+Confirm those feature types and attributes exist in the supplied annotation.
 
-When `--skip_rrna false` is used, the workflow expects six rRNA reference FASTA
-files. Their locations can be supplied individually with `--database1` through
-`--database6`; see [Parameters](#parameters).
-
-## Running the pipeline
+## Run
 
 From the repository root:
 
@@ -88,119 +74,136 @@ nextflow run workflow.nf \
   --datasets /absolute/path/samples.csv \
   --ref_file /absolute/path/reference.fna \
   --anno_file /absolute/path/annotation.gff \
-  --gff_to_bed_script "$(pwd)/Scripts/gff_to_bed.py" \
-  --gff_to_saf_script "$(pwd)/Scripts/gff_to_saf.py" \
-  --strandedness_script "$(pwd)/Scripts/infer_strandedness.py" \
-  --tpm_normalization_script "$(pwd)/Scripts/tpm_calc.py" \
-  --mean_tpm_calc "$(pwd)/Scripts/mean_tpm_calc.py" \
+  --outdir results \
   --skip_rrna true \
   -resume
 ```
 
-`--skip_rrna` defaults to `true`. To enable SortMeRNA filtering:
+The helper scripts are loaded from `Scripts/` automatically; script-path
+parameters are neither required nor supported.
+
+### Enable rRNA filtering
+
+`--skip_rrna` defaults to `true`. To run SortMeRNA, set it to `false` and supply
+all six database files:
 
 ```bash
 nextflow run workflow.nf \
   --datasets /absolute/path/samples.csv \
   --ref_file /absolute/path/reference.fna \
   --anno_file /absolute/path/annotation.gff \
-  --gff_to_bed_script "$(pwd)/Scripts/gff_to_bed.py" \
-  --strandedness_script "$(pwd)/Scripts/infer_strandedness.py" \
-  --tpm_normalization_script "$(pwd)/Scripts/tpm_calc.py" \
-  --mean_tpm_calc "$(pwd)/Scripts/mean_tpm_calc.py" \
+  --outdir results \
   --skip_rrna false \
-  --database1 /path/to/rfam-5.8s-database-id98.fasta \
-  --database2 /path/to/rfam-5s-database-id98.fasta \
-  --database3 /path/to/silva-bac-16s-id90.fasta \
-  --database4 /path/to/silva-bac-23s-id98.fasta \
-  --database5 /path/to/silva-arc-16s-id95.fasta \
-  --database6 /path/to/silva-arc-23s-id98.fasta \
+  --database1 /db/rfam-5.8s-database-id98.fasta \
+  --database2 /db/rfam-5s-database-id98.fasta \
+  --database3 /db/silva-bac-16s-id90.fasta \
+  --database4 /db/silva-bac-23s-id98.fasta \
+  --database5 /db/silva-arc-16s-id95.fasta \
+  --database6 /db/silva-arc-23s-id98.fasta \
   -resume
 ```
+
+Each SortMeRNA task uses a private work directory inside its Nextflow task. It
+does not delete or share `~/sortmerna` state.
 
 ## Parameters
 
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `--datasets` | `datasets.csv` | Input sample sheet |
-| `--ref_file` | `ref` | Reference genome FASTA |
-| `--anno_file` | `gff` | GFF3 annotation |
-| `--q_score` | `5` | Mean-quality cutoff passed to fastp |
+| `--ref_file` | required | Reference genome FASTA |
+| `--anno_file` | required | GFF3 annotation |
+| `--outdir` | `results` | Published results directory |
+| `--q_score` | `5` | fastp mean-quality cutoff |
 | `--skip_rrna` | `true` | Skip SortMeRNA when true |
-| `--database1` … `--database6` | paths under `Databases/` | SortMeRNA reference FASTA files |
-| `--gff_to_bed_script` | `gff_to_bed_script.py` | GFF3-to-BED helper for RSeQC |
-| `--gff_to_saf_script` | `gff_to_saf_script.py` | GFF3-to-SAF helper (currently unused) |
-| `--strandedness_script` | `scripts/infer_strandedness.py` | Converts RSeQC output to featureCounts strand code |
-| `--tpm_normalization_script` | `tpm_calc.py` | Calculates per-sample TPM |
-| `--mean_tpm_calc` | `mean_tpm_calc.py` | Combines samples and calculates condition means |
-
-The workflow also defines internal `--anno_file_relative_path` and
-`--index_path` parameters. Their defaults are coupled to Nextflow work-directory
-depth; overriding them may be necessary if the directory layout changes.
+| `--database1` … `--database6` | none | rRNA FASTA files required when filtering |
 
 ## Outputs
 
-The current workflow publishes files under `Omics/Expression/`:
+All published files are written beneath `--outdir`:
 
 | Directory | Contents |
 |---|---|
-| `Trimming/` | Trimmed FASTQ files and PE fastp HTML reports |
-| `Clean_Reads/` | Non-rRNA reads when filtering is enabled |
-| `Index/` | Bowtie 2 reference index |
-| `Mapping/` | Coordinate-sorted BAM files |
-| `Strandedness/` | RSeQC strand reports and BAM copies |
-| `Quantification/` | featureCounts tables, length metrics, normalized tables, `Expression.csv`, and condition BigWigs |
+| `trimming/` | Trimmed FASTQs and fastp reports |
+| `clean_reads/` | Non-rRNA FASTQs when filtering is enabled |
+| `index/` | Bowtie 2 index bundle |
+| `mapping/` | Coordinate-sorted BAM files |
+| `strandedness/` | RSeQC strand reports |
+| `quantification/` | featureCounts results, length metrics, per-sample TPM, and `Expression.csv` |
+| `bigwig/` | Condition-level CPM-normalized BigWigs |
+| `pipeline_info/` | Nextflow report, timeline, trace, and DAG |
 
-Nextflow also creates `work/`, `.nextflow/`, `.nextflow.log`, and execution
-metadata. These are excluded from Git.
+Processes now use Nextflow's default fail-fast behavior. Quantification or
+BigWig failures therefore fail the workflow instead of silently dropping output.
+
+## Bowtie 2 index channel
+
+`BUILD_INDEX` receives the reference as a value channel and emits the complete
+`index*.bt2*` set as a reusable value-channel bundle:
+
+```groovy
+index_bundle = BUILD_INDEX(reference).index_files
+mapped_pe = MAP_PE(clean_pe, index_bundle).bam
+mapped_se = MAP_SE(clean_se, index_bundle).bam
+```
+
+Because `reference` is a value channel, the process output is also a value
+channel and can be reused by every mapping task. Each task receives all six
+small-index files (or all six large-index files) in its work directory and calls
+`bowtie2 -x index`. This is different from passing one queue emission per index
+file, which causes incomplete indexes, or pairing a one-item queue with many
+reads, which can schedule only one sample. Mapping cannot begin until
+`BUILD_INDEX` completes.
+
+## Reproducibility and resources
+
+`nextflow.config` defines fail-fast execution and three resource classes:
+
+| Label | CPUs | Memory | Time |
+|---|---:|---:|---:|
+| `small` | 2 | 4 GB | 2 hours |
+| `medium` | 4 | 8 GB | 8 hours |
+| `large` | 8 | 16 GB | 12 hours |
+
+Adjust these values for the executor and dataset size. Tool versions are pinned
+in `environment.yml`; update and retest that file deliberately when upgrading.
+
+## Tests
+
+The repository includes mixed PE/SE test metadata, tiny reference/annotation
+fixtures, a Nextflow stub-run smoke test, and a Python unit test for condition
+names containing underscores.
+
+Run them from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+bash tests/run_stub_test.sh
+```
+
+The stub test validates the complete dataflow and declared outputs without
+running bioinformatics tools or creating the Conda environment. It is not a
+scientific validation dataset; a real small-dataset integration test remains a
+recommended future addition.
 
 ## Helper scripts
 
-- `Scripts/gff_to_bed.py`: converts selected GFF3 features (CDS by default) to
-  BED12 for RSeQC.
-- `Scripts/gff_to_saf.py`: converts GFF3 to SAF; it is not called by the current
-  workflow.
-- `Scripts/infer_strandedness.py`: maps RSeQC fractions to featureCounts codes
-  (`0` unstranded, `1` forward, `2` reverse).
+- `Scripts/gff_to_bed.py`: GFF3 to BED12 conversion for RSeQC.
+- `Scripts/gff_to_saf.py`: optional GFF3 to SAF converter; not used by the
+  current workflow.
+- `Scripts/infer_strandedness.py`: maps RSeQC fractions to featureCounts strand
+  codes.
 - `Scripts/tpm_calc.py`: calculates effective-length-adjusted TPM.
-- `Scripts/mean_tpm_calc.py`: merges normalized samples and calculates mean TPM
-  for each condition.
+- `Scripts/mean_tpm_calc.py`: uses the sample sheet to calculate condition means,
+  avoiding ambiguous underscore-based parsing.
 
-Each converter supports `--help`, for example:
+## Remaining limitations
 
-```bash
-python3 Scripts/gff_to_bed.py --help
-```
-
-## Known limitations
-
-The review identified the following points that should be resolved before the
-workflow is treated as reproducible or production-ready:
-
-1. The Bowtie 2 index process is not connected to the mapping processes through
-   a Nextflow channel. Mapping instead reads a fixed published path, so a fresh
-   run may race the index build or reuse a stale index.
-2. Annotation and index defaults use hard-coded `../../../` paths relative to
-   process work directories. This is fragile and bypasses normal Nextflow file
-   staging.
-3. Output locations are hard-coded; the `--outdir` shown in the older
-   `run_commands.md` is not used by `workflow.nf`.
-4. SortMeRNA processes run `rm -rf ~/sortmerna/` before every task. Concurrent
-   samples can interfere with one another and the command removes state outside
-   the Nextflow task directory.
-5. `errorStrategy 'ignore'` on quantification and BigWig creation can allow a run
-   to finish despite missing scientific outputs.
-6. Tool versions and resources (`cpus`, memory, time) are not pinned or defined.
-7. Condition extraction in `mean_tpm_calc.py` splits column names on `_`; sample
-   IDs or condition names containing underscores can therefore be misclassified.
-8. The workflow has no automated test data or end-to-end validation test.
-
-## Reproducibility recommendations
-
-Before publishing releases, add a small test dataset, pin tool versions through
-Conda or containers, connect all reference inputs through channels, expose a
-single output directory, and fail explicitly when required outputs cannot be
-created.
+- The committed test is a stub-run structural test, not an end-to-end scientific
+  validation against expected biological results.
+- Resource values are reasonable defaults, not guarantees for every genome or
+  sample depth.
+- Conda package availability depends on the configured channels and platform.
 
 ## License and citation
 

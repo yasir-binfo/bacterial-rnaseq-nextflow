@@ -1,388 +1,529 @@
 #!/usr/bin/env nextflow
 
-/**
-
-BaNeX - Bacterial Neutral Sites Prediction using multi-Omics
-
-**/
-
-process Trimming_PE {
-
-    publishDir "Omics/Expression/Trimming", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(condition), path(read1), path(read2)
-    val q_score
-
-    output:
-    tuple val("${sample_id}"), val("${condition}"), path("$sample_id*R1.fastq*"), path("$sample_id*R2.fastq*"), emit: trimmed_reads
-    path "${sample_id}_fastp_report.html"
-
-    script:
-    """
-    fastp -i ${read1} -I ${read2} -o ${sample_id}_trimmed_R1.fastq.gz -O ${sample_id}_trimmed_R2.fastq.gz \
-    --cut_mean_quality $q_score --detect_adapter_for_pe --cut_front --trim_poly_g -l 50 -w $task.cpus -h ${sample_id}_fastp_report.html
-    """
-
-}
-
-process Trimming_SE {
-    publishDir "Omics/Expression/Trimming", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(type), path(read1)
-    val q_score
-
-    output:
-    tuple val(sample_id), val(type), path("*_trimmed_SE.fastq.gz"), emit: trimmed_reads
-
-    script:
-    """
-    fastp -i ${read1} \
-          -o ${sample_id}_trimmed_SE.fastq.gz \
-          --cut_mean_quality $q_score \
-          --cut_front --trim_poly_g \
-          -l 50 \
-          -w $task.cpus \
-          -h ${sample_id}_fastp_report.html
-    """
-}
-
-
-process RRNA_Filtration_PE {
-
-    beforeScript 'rm -rf ~/sortmerna/'
-
-    publishDir "Omics/Expression/Clean_Reads", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(condition), path(trimmed_read1), path(trimmed_read2)
-
-    output:
-    tuple val("${sample_id}"), val("${condition}"), path("${sample_id}_non_rRNA_reads_fwd*"), path("${sample_id}_non_rRNA_reads_rev*"), emit: clean_reads
-    val("${sample_id}"), emit: sample_id
-
-    when:
-    !params.skip_rrna
-
-    script:
-    """
-    sortmerna -ref ${params.database1} -ref ${params.database2} -ref ${params.database3} -ref ${params.database4} -ref ${params.database5} \
-    -ref ${params.database6} -reads ${trimmed_read1} -reads ${trimmed_read2} --fastx --aligned rRNA_reads --other ${sample_id}_non_rRNA_reads \
-    --paired_out --out2 --threads $task.cpus
-     """
-
-}
-
-process RRNA_Filtration_SE {
-
-    beforeScript 'rm -rf ~/sortmerna/'
-
-    publishDir "Omics/Expression/Clean_Reads", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(condition), path(trimmed_read1)
-
-    output:
-    tuple val("${sample_id}"), val("${condition}"), path("${sample_id}_non_rRNA_reads*"), emit: clean_reads
-    val("${sample_id}"), emit: sample_id
-
-    when:
-    !params.skip_rrna
-
-    script:
-    """
-    sortmerna -ref ${params.database1} -ref ${params.database2} -ref ${params.database3} -ref ${params.database4} -ref ${params.database5} \
-    -ref ${params.database6} -reads ${trimmed_read1} --fastx --aligned rRNA_reads --other ${sample_id}_non_rRNA_reads \
-    --threads $task.cpus
-     """
-
-}
-
-process Index {
-
-    publishDir "Omics/Expression/Index", mode: 'copy'
-
-    input:
-    path ref_file
-
-    output:
-    path "index*"
-
-    script:
-    """
-    bowtie2-build $ref_file index
-    """
-
-}
-
-process Mapping_PE {
-
-    publishDir "Omics/Expression/Mapping", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(condition), path(read1), path(read2)
-
-    output:
-    tuple val("${sample_id}"), val("PE"), val("${condition}"), path("${sample_id}.sorted.bam"), emit: bam_file
-
-    script:
-    """
-    bowtie2 -p ${task.cpus} -x ${params.index_path}/index -1 ${read1} -2 ${read2} -S ${sample_id}.sam && \
-    samtools view -bS ${sample_id}.sam | samtools sort -@ ${task.cpus} -o ${sample_id}.sorted.bam && \
-    rm ${sample_id}.sam
-    """
-}
-
-process Mapping_SE {
-
-    publishDir "Omics/Expression/Mapping", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(cond), path(read1)
-
-    output:
-    tuple val(sample_id), val("SE"), val(cond), path("${sample_id}.sorted.bam"), emit: bam_file
-
-    script:
-    """
-    bowtie2 -p $task.cpus -x ${params.index_path}/index -U ${read1} -S ${sample_id}.sam && \
-    samtools view -bS ${sample_id}.sam | samtools sort -@ ${task.cpus} -o ${sample_id}.sorted.bam && \
-    rm ${sample_id}.sam
-    """
-}
-
-process Estimate_Strandedness {
-
-    publishDir "Omics/Expression/Strandedness", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(orientation), val(condition), path(bam_file)
-
-    output:
-    tuple val("${sample_id}"), val(orientation), val("${condition}"), path("strand_info_${sample_id}.txt"), path("${bam_file}"), emit: strand_and_bam
-
-    script:
-    """
-    name=\$(basename ${params.anno_file_relative_path} .gff) &&
-    python3 ${params.gff_to_bed_script} -i ${params.anno_file_relative_path} -o \$name.bed &&
-    infer_experiment.py -r \$name.bed -i $bam_file > strand_info_${sample_id}.txt
-    """
-}
-
-process Quantification_PE {
-
-    errorStrategy 'ignore'
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(orientation), val(condition), path(strand_info_file), path(bam_file)
-
-    output:
-    tuple val("${sample_id}"), val(orientation), val("${condition}"), path("${sample_id}.results"), path("${sample_id}.results.summary"), path("$bam_file"), emit: feature_count
-
-
-    script:
-    """
-    strand=\$(python3 ${params.strandedness_script} ${strand_info_file})
-    echo "Detected strand: \$strand"
-    featureCounts -a ${params.anno_file_relative_path} -o ${sample_id}.results -t gene,pseudogene -g locus_tag -M -O -Q 10 -s \$strand -p --countReadPairs -T $task.cpus $bam_file
-    """
-
-}
-
-process Quantification_SE {
-
-    errorStrategy 'ignore'
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(orientation), val(condition), path(strand_info_file), path(bam_file)
-
-    output:
-    tuple val("${sample_id}"), val(orientation), val("${condition}"), path("${sample_id}.results"), path("${sample_id}.results.summary"), path("$bam_file"), emit: feature_count
-
-
-    script:
-    """
-    strand=\$(python3 ${params.strandedness_script} ${strand_info_file})
-    echo "Detected strand: \$strand"
-    featureCounts -a ${params.anno_file_relative_path} -o ${sample_id}.results -t gene,pseudogene -g locus_tag -M -O -Q 10 -s \$strand -T $task.cpus $bam_file
-    """
-
-}
-
-process Normalization_PE {
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(orientation), val(condition), path(feature_count_result), path(feature_count_result_summary), path(bam_file)
-
-    output:
-    tuple val("${sample_id}"), val(orientation), val("${condition}"), path("${sample_id}_normalized.results"), path("${sample_id}_fragment_len_metrics.txt"), emit: normalization
-
-
-    script:
-    """
-    echo -e "Count\tFragment_Length" > ${sample_id}_fragment_len_metrics.txt && \
-    samtools view -f 0x2 $bam_file | awk '(\$9 > 0) {print \$9}' | sort | uniq -c | sort -nr | awk '{print \$1"\\t"\$2}' >> ${sample_id}_fragment_len_metrics.txt &&
-    python3 ${params.tpm_normalization_script} ${sample_id} ${condition} ${sample_id}_fragment_len_metrics.txt $feature_count_result ${sample_id}_normalized.results
-    """
-
-
-}
-
-process Normalization_SE {
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(orientation), val(condition), path(feature_count_result), path(feature_count_result_summary), path(bam_file)
-
-    output:
-    tuple val("${sample_id}"), val(orientation), val("${condition}"), path("${sample_id}_normalized.results"), path("${sample_id}_read_len_metrics.txt"), emit: normalization
-
-
-    script:
-    """
-    echo -e "Count\tFragment_Length" > ${sample_id}_read_len_metrics.txt && \
-    samtools view $bam_file | awk '{print length(\$10)}' | sort | uniq -c | sort -nr | awk '{print \$1"\\t"\$2}' >> ${sample_id}_read_len_metrics.txt &&
-    python3 ${params.tpm_normalization_script} ${sample_id} ${condition} ${sample_id}_read_len_metrics.txt $feature_count_result ${sample_id}_normalized.results
-    """
-
-}
-
-process Mean_TPM {
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    val normalized_results
-
-    output:
-    path('Expression.csv'), emit: mean_tpm
-
-    script:
-    """
-    python3 ${params.mean_tpm_calc} ${normalized_results.join(' ')} 'Expression.csv'
-    """
-}
-
-process BigWig {
-
-    errorStrategy 'ignore'
-
-    publishDir "Omics/Expression/Quantification", mode: 'copy'
-
-    input:
-    tuple val(condition), val(sample_id), path(bam_file)
-
-    output:
-    path("${condition}.bw"), emit: bigwig_per_condition
-
-    script:
-    """
-    samtools merge -f ${condition}.bam ${bam_file.join(' ')}
-    samtools index ${condition}.bam
-    bamCoverage -b ${condition}.bam -o ${condition}.bw --normalizeUsing CPM
-    """
-}
-
-
-params.datasets = "datasets.csv"
+nextflow.enable.dsl = 2
+
+/*
+ * Bacterial RNA-seq preprocessing, alignment, quantification, and coverage.
+ */
+
+params.datasets = 'datasets.csv'
+params.ref_file = null
+params.anno_file = null
+params.outdir = 'results'
 params.q_score = 5
-params.databases_path = 'Databases'
-params.database1 = "../../../${params.databases_path}/rfam-5.8s-database-id98.fasta"
-params.database2 = "../../../${params.databases_path}/rfam-5s-database-id98.fasta"
-params.database3 = "../../../${params.databases_path}/silva-bac-16s-id90.fasta"
-params.database4 = "../../../${params.databases_path}/silva-bac-23s-id98.fasta"
-params.database5 = "../../../${params.databases_path}/silva-arc-16s-id95.fasta"
-params.database6 = "../../../${params.databases_path}/silva-arc-23s-id98.fasta"
-params.ref_file = 'ref'
-params.anno_file = 'gff'
-params.anno_file_relative_path = "../../../${params.anno_file}"
-params.index_path = "../../../Omics/Expression/Index"
-params.strandedness_script = 'scripts/infer_strandedness.py'
-params.gff_to_bed_script = 'gff_to_bed_script.py'
-params.gff_to_saf_script = 'gff_to_saf_script.py'
-params.tpm_normalization_script='tpm_calc.py'
-params.mean_tpm_calc = 'mean_tpm_calc.py'
-// params.outdir = ''
 params.skip_rrna = true
+params.database1 = null
+params.database2 = null
+params.database3 = null
+params.database4 = null
+params.database5 = null
+params.database6 = null
+
+process TRIM_PE {
+    tag "${sample_id}"
+    label 'small'
+    publishDir "${params.outdir}/trimming", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1), path(read2)
+    val q_score
+
+    output:
+    tuple val(sample_id), val(condition), path("${sample_id}_trimmed_R1.fastq.gz"), path("${sample_id}_trimmed_R2.fastq.gz"), emit: reads
+    path "${sample_id}_fastp_report.html", emit: report
+
+    script:
+    """
+    fastp \
+      -i ${read1} -I ${read2} \
+      -o ${sample_id}_trimmed_R1.fastq.gz \
+      -O ${sample_id}_trimmed_R2.fastq.gz \
+      --cut_mean_quality ${q_score} \
+      --detect_adapter_for_pe --cut_front --trim_poly_g \
+      -l 50 -w ${task.cpus} \
+      -h ${sample_id}_fastp_report.html
+    """
+
+    stub:
+    """
+    touch ${sample_id}_trimmed_R1.fastq.gz ${sample_id}_trimmed_R2.fastq.gz
+    touch ${sample_id}_fastp_report.html
+    """
+}
+
+process TRIM_SE {
+    tag "${sample_id}"
+    label 'small'
+    publishDir "${params.outdir}/trimming", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1)
+    val q_score
+
+    output:
+    tuple val(sample_id), val(condition), path("${sample_id}_trimmed_SE.fastq.gz"), emit: reads
+    path "${sample_id}_fastp_report.html", emit: report
+
+    script:
+    """
+    fastp \
+      -i ${read1} \
+      -o ${sample_id}_trimmed_SE.fastq.gz \
+      --cut_mean_quality ${q_score} \
+      --cut_front --trim_poly_g \
+      -l 50 -w ${task.cpus} \
+      -h ${sample_id}_fastp_report.html
+    """
+
+    stub:
+    """
+    touch ${sample_id}_trimmed_SE.fastq.gz ${sample_id}_fastp_report.html
+    """
+}
+
+process FILTER_RRNA_PE {
+    tag "${sample_id}"
+    label 'large'
+    publishDir "${params.outdir}/clean_reads", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1), path(read2)
+    path rrna_databases
+
+    output:
+    tuple val(sample_id), val(condition), path("${sample_id}_non_rRNA_reads_fwd*"), path("${sample_id}_non_rRNA_reads_rev*"), emit: reads
+
+    script:
+    def references = rrna_databases.collect { "-ref ${it}" }.join(' ')
+    """
+    sortmerna \
+      ${references} \
+      -reads ${read1} -reads ${read2} \
+      --fastx --paired_out --out2 \
+      --aligned ${sample_id}_rRNA_reads \
+      --other ${sample_id}_non_rRNA_reads \
+      --workdir sortmerna_work \
+      --threads ${task.cpus}
+    """
+
+    stub:
+    """
+    touch ${sample_id}_non_rRNA_reads_fwd.fastq ${sample_id}_non_rRNA_reads_rev.fastq
+    """
+}
+
+process FILTER_RRNA_SE {
+    tag "${sample_id}"
+    label 'large'
+    publishDir "${params.outdir}/clean_reads", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1)
+    path rrna_databases
+
+    output:
+    tuple val(sample_id), val(condition), path("${sample_id}_non_rRNA_reads*"), emit: reads
+
+    script:
+    def references = rrna_databases.collect { "-ref ${it}" }.join(' ')
+    """
+    sortmerna \
+      ${references} \
+      -reads ${read1} \
+      --fastx \
+      --aligned ${sample_id}_rRNA_reads \
+      --other ${sample_id}_non_rRNA_reads \
+      --workdir sortmerna_work \
+      --threads ${task.cpus}
+    """
+
+    stub:
+    """
+    touch ${sample_id}_non_rRNA_reads.fastq
+    """
+}
+
+process BUILD_INDEX {
+    tag 'bowtie2-index'
+    label 'medium'
+    publishDir "${params.outdir}/index", mode: 'copy'
+
+    input:
+    path reference
+
+    output:
+    path 'index*.bt2*', emit: index_files
+
+    script:
+    """
+    bowtie2-build --threads ${task.cpus} ${reference} index
+    """
+
+    stub:
+    """
+    touch index.1.bt2 index.2.bt2 index.3.bt2 index.4.bt2 index.rev.1.bt2 index.rev.2.bt2
+    """
+}
+
+process MAP_PE {
+    tag "${sample_id}"
+    label 'medium'
+    publishDir "${params.outdir}/mapping", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1), path(read2)
+    path index_files
+
+    output:
+    tuple val(sample_id), val('PE'), val(condition), path("${sample_id}.sorted.bam"), emit: bam
+
+    script:
+    """
+    bowtie2 -p ${task.cpus} -x index -1 ${read1} -2 ${read2} \
+      | samtools view -@ ${task.cpus} -b - \
+      | samtools sort -@ ${task.cpus} -o ${sample_id}.sorted.bam -
+    """
+
+    stub:
+    """
+    touch ${sample_id}.sorted.bam
+    """
+}
+
+process MAP_SE {
+    tag "${sample_id}"
+    label 'medium'
+    publishDir "${params.outdir}/mapping", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(condition), path(read1)
+    path index_files
+
+    output:
+    tuple val(sample_id), val('SE'), val(condition), path("${sample_id}.sorted.bam"), emit: bam
+
+    script:
+    """
+    bowtie2 -p ${task.cpus} -x index -U ${read1} \
+      | samtools view -@ ${task.cpus} -b - \
+      | samtools sort -@ ${task.cpus} -o ${sample_id}.sorted.bam -
+    """
+
+    stub:
+    """
+    touch ${sample_id}.sorted.bam
+    """
+}
+
+process GFF_TO_BED {
+    tag 'annotation-bed'
+    label 'small'
+
+    input:
+    path annotation
+    path converter
+
+    output:
+    path 'annotation.bed', emit: bed
+
+    script:
+    """
+    python3 ${converter} -i ${annotation} -o annotation.bed
+    """
+
+    stub:
+    """
+    touch annotation.bed
+    """
+}
+
+process ESTIMATE_STRANDEDNESS {
+    tag "${sample_id}"
+    label 'small'
+    publishDir "${params.outdir}/strandedness", mode: 'copy', pattern: 'strand_info_*.txt'
+
+    input:
+    tuple val(sample_id), val(layout), val(condition), path(bam_file)
+    path annotation_bed
+
+    output:
+    tuple val(sample_id), val(layout), val(condition), path("strand_info_${sample_id}.txt"), path(bam_file), emit: result
+
+    script:
+    """
+    infer_experiment.py -r ${annotation_bed} -i ${bam_file} > strand_info_${sample_id}.txt
+    """
+
+    stub:
+    """
+    echo 'Fraction of reads explained by "++,--": 0.99' > strand_info_${sample_id}.txt
+    """
+}
+
+process QUANTIFY_PE {
+    tag "${sample_id}"
+    label 'medium'
+    publishDir "${params.outdir}/quantification", mode: 'copy', pattern: '*.results*'
+
+    input:
+    tuple val(sample_id), val(layout), val(condition), path(strand_info), path(bam_file)
+    path annotation
+    path strandedness_script
+
+    output:
+    tuple val(sample_id), val(layout), val(condition), path("${sample_id}.results"), path("${sample_id}.results.summary"), path(bam_file), emit: counts
+
+    script:
+    """
+    strand=\$(python3 ${strandedness_script} ${strand_info})
+    featureCounts \
+      -a ${annotation} -o ${sample_id}.results \
+      -t gene,pseudogene -g locus_tag \
+      -M -O -Q 10 -s \${strand} \
+      -p --countReadPairs -T ${task.cpus} ${bam_file}
+    """
+
+    stub:
+    """
+    touch ${sample_id}.results ${sample_id}.results.summary
+    """
+}
+
+process QUANTIFY_SE {
+    tag "${sample_id}"
+    label 'medium'
+    publishDir "${params.outdir}/quantification", mode: 'copy', pattern: '*.results*'
+
+    input:
+    tuple val(sample_id), val(layout), val(condition), path(strand_info), path(bam_file)
+    path annotation
+    path strandedness_script
+
+    output:
+    tuple val(sample_id), val(layout), val(condition), path("${sample_id}.results"), path("${sample_id}.results.summary"), path(bam_file), emit: counts
+
+    script:
+    """
+    strand=\$(python3 ${strandedness_script} ${strand_info})
+    featureCounts \
+      -a ${annotation} -o ${sample_id}.results \
+      -t gene,pseudogene -g locus_tag \
+      -M -O -Q 10 -s \${strand} \
+      -T ${task.cpus} ${bam_file}
+    """
+
+    stub:
+    """
+    touch ${sample_id}.results ${sample_id}.results.summary
+    """
+}
+
+process NORMALIZE_PE {
+    tag "${sample_id}"
+    label 'small'
+    publishDir "${params.outdir}/quantification", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(layout), val(condition), path(counts), path(summary), path(bam_file)
+    path tpm_script
+
+    output:
+    tuple val(sample_id), val(layout), val(condition), path("${sample_id}_normalized.results"), path("${sample_id}_fragment_len_metrics.txt"), emit: result
+
+    script:
+    """
+    echo -e 'Count\\tFragment_Length' > ${sample_id}_fragment_len_metrics.txt
+    samtools view -f 0x2 ${bam_file} \
+      | awk '(\$9 > 0) {print \$9}' \
+      | sort -n | uniq -c \
+      | awk '{print \$1"\\t"\$2}' >> ${sample_id}_fragment_len_metrics.txt
+    python3 ${tpm_script} ${sample_id} ${condition} \
+      ${sample_id}_fragment_len_metrics.txt ${counts} ${sample_id}_normalized.results
+    """
+
+    stub:
+    """
+    touch ${sample_id}_normalized.results ${sample_id}_fragment_len_metrics.txt
+    """
+}
+
+process NORMALIZE_SE {
+    tag "${sample_id}"
+    label 'small'
+    publishDir "${params.outdir}/quantification", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(layout), val(condition), path(counts), path(summary), path(bam_file)
+    path tpm_script
+
+    output:
+    tuple val(sample_id), val(layout), val(condition), path("${sample_id}_normalized.results"), path("${sample_id}_read_len_metrics.txt"), emit: result
+
+    script:
+    """
+    echo -e 'Count\\tFragment_Length' > ${sample_id}_read_len_metrics.txt
+    samtools view -F 0x4 ${bam_file} \
+      | awk '{print length(\$10)}' \
+      | sort -n | uniq -c \
+      | awk '{print \$1"\\t"\$2}' >> ${sample_id}_read_len_metrics.txt
+    python3 ${tpm_script} ${sample_id} ${condition} \
+      ${sample_id}_read_len_metrics.txt ${counts} ${sample_id}_normalized.results
+    """
+
+    stub:
+    """
+    touch ${sample_id}_normalized.results ${sample_id}_read_len_metrics.txt
+    """
+}
+
+process MEAN_TPM {
+    tag 'condition-means'
+    label 'small'
+    publishDir "${params.outdir}/quantification", mode: 'copy'
+
+    input:
+    path normalized_results
+    path samplesheet
+    path mean_tpm_script
+
+    output:
+    path 'Expression.csv', emit: expression
+
+    script:
+    """
+    python3 ${mean_tpm_script} \
+      --samplesheet ${samplesheet} \
+      --output Expression.csv \
+      ${normalized_results.join(' ')}
+    """
+
+    stub:
+    """
+    touch Expression.csv
+    """
+}
+
+process BIGWIG {
+    tag "${condition}"
+    label 'medium'
+    publishDir "${params.outdir}/bigwig", mode: 'copy'
+
+    input:
+    tuple val(condition), val(sample_ids), path(bam_files)
+
+    output:
+    path "${condition}.bw", emit: bigwig
+
+    script:
+    """
+    samtools merge -@ ${task.cpus} -f ${condition}.bam ${bam_files.join(' ')}
+    samtools index -@ ${task.cpus} ${condition}.bam
+    bamCoverage \
+      -p ${task.cpus} \
+      -b ${condition}.bam \
+      -o ${condition}.bw \
+      --normalizeUsing CPM
+    """
+
+    stub:
+    """
+    touch ${condition}.bw
+    """
+}
 
 workflow {
-
-    //reads = Channel.fromFilePairs(params.fastq_files, checkifExists: true)
-    reads = Channel.fromPath(params.datasets).splitCsv(header:true)
-    .map { row ->
-        def r1 = file(row.fastq_1)
-        def r2 = row.fastq_2 ? file(row.fastq_2) : null
-        tuple(row.sample_id, row.condition, r1, r2)
-         }
-
-    // Separate SE and PE reads
-    pe_reads = reads.filter { it[3] != null }  // paired-end
-    se_reads = reads.filter { it[3] == null }  // single-end
-
-    // Trim reads
-    trimmed_pe = Trimming_PE(pe_reads.map { s_id, cond, r1, r2 -> tuple(s_id, cond, r1, r2) }, params.q_score)
-    trimmed_se = Trimming_SE(se_reads.map { s_id, cond, r1, r2 -> tuple(s_id, cond, r1) }, params.q_score)
-
-
-
-    database1 = Channel.fromPath(params.database1)
-    database2 = Channel.fromPath(params.database2)
-    database3 = Channel.fromPath(params.database3)
-    database4 = Channel.fromPath(params.database4)
-    database5 = Channel.fromPath(params.database5)
-    database6 = Channel.fromPath(params.database6)
-    ref_file = Channel.fromPath(params.ref_file)
-
-
-//     // Conditionally run RRNA_Filtration
-    if (!params.skip_rrna) {
-        clean_out_pe = RRNA_Filtration_PE(trimmed_pe.trimmed_reads).clean_reads
-        clean_out_se = RRNA_Filtration_SE(trimmed_se.trimmed_reads).clean_reads
-    } else {
-        // Bypass: just rename for consistency
-        clean_out_pe = trimmed_pe.trimmed_reads
-        clean_out_se = trimmed_se.trimmed_reads
+    if (!params.ref_file) {
+        error 'Missing required parameter: --ref_file'
+    }
+    if (!params.anno_file) {
+        error 'Missing required parameter: --anno_file'
     }
 
-    Index(ref_file)
+    def samplesheet_file = file(params.datasets, checkIfExists: true)
+    def reference_file = file(params.ref_file, checkIfExists: true)
+    def annotation_file = file(params.anno_file, checkIfExists: true)
 
-    mapped_pe = Mapping_PE(clean_out_pe)
-    mapped_se = Mapping_SE(clean_out_se)
+    samplesheet = Channel.value(samplesheet_file)
+    reference = Channel.value(reference_file)
+    annotation = Channel.value(annotation_file)
+    gff_to_bed_script = Channel.value(file("${projectDir}/Scripts/gff_to_bed.py", checkIfExists: true))
+    strandedness_script = Channel.value(file("${projectDir}/Scripts/infer_strandedness.py", checkIfExists: true))
+    tpm_script = Channel.value(file("${projectDir}/Scripts/tpm_calc.py", checkIfExists: true))
+    mean_tpm_script = Channel.value(file("${projectDir}/Scripts/mean_tpm_calc.py", checkIfExists: true))
+
+    reads = Channel
+        .fromPath(samplesheet_file, checkIfExists: true)
+        .splitCsv(header: true)
+        .map { row ->
+            if (!row.sample_id || !row.condition || !row.fastq_1) {
+                error 'Each sample-sheet row requires sample_id, condition, and fastq_1'
+            }
+            if (!(row.sample_id ==~ /[A-Za-z0-9][A-Za-z0-9._-]*/)) {
+                error "Invalid sample_id '${row.sample_id}': use letters, numbers, dot, underscore, or hyphen"
+            }
+            if (!(row.condition ==~ /[A-Za-z0-9][A-Za-z0-9._-]*/)) {
+                error "Invalid condition '${row.condition}': use letters, numbers, dot, underscore, or hyphen"
+            }
+
+            def read1 = file(row.fastq_1, checkIfExists: true)
+            def read2 = row.fastq_2?.trim() ? file(row.fastq_2, checkIfExists: true) : null
+            tuple(row.sample_id, row.condition, read1, read2)
+        }
+
+    pe_reads = reads.filter { sample_id, condition, read1, read2 -> read2 != null }
+    se_reads = reads.filter { sample_id, condition, read1, read2 -> read2 == null }
+
+    trimmed_pe = TRIM_PE(pe_reads, params.q_score).reads
+    trimmed_se = TRIM_SE(
+        se_reads.map { sample_id, condition, read1, read2 -> tuple(sample_id, condition, read1) },
+        params.q_score
+    ).reads
+
+    if (params.skip_rrna) {
+        clean_pe = trimmed_pe
+        clean_se = trimmed_se
+    } else {
+        def database_params = (1..6).collect { params["database${it}"] }
+        if (database_params.any { !it }) {
+            error 'Set --database1 through --database6 when --skip_rrna false'
+        }
+        rrna_databases = Channel.value(
+            database_params.collect { file(it, checkIfExists: true) }
+        )
+        clean_pe = FILTER_RRNA_PE(trimmed_pe, rrna_databases).reads
+        clean_se = FILTER_RRNA_SE(trimmed_se, rrna_databases).reads
+    }
+
+    // BUILD_INDEX is driven by a value channel, so its complete .bt2/.bt2l
+    // bundle is also a reusable value channel broadcast to every mapper.
+    index_bundle = BUILD_INDEX(reference).index_files
+
+    mapped_pe = MAP_PE(clean_pe, index_bundle).bam
+    mapped_se = MAP_SE(clean_se, index_bundle).bam
     mapped_bam = mapped_pe.mix(mapped_se)
 
-    strandedness = Estimate_Strandedness(mapped_bam)
+    annotation_bed = GFF_TO_BED(annotation, gff_to_bed_script).bed
+    stranded = ESTIMATE_STRANDEDNESS(mapped_bam, annotation_bed).result
 
-    pe = strandedness.filter { it[1] == 'PE'}
-    se = strandedness.filter { it[1] == 'SE'}
+    pe_stranded = stranded.filter { sample_id, layout, condition, strand_info, bam -> layout == 'PE' }
+    se_stranded = stranded.filter { sample_id, layout, condition, strand_info, bam -> layout == 'SE' }
 
-    quant_pe = Quantification_PE(pe)
-    quant_se = Quantification_SE(se)
+    pe_counts = QUANTIFY_PE(pe_stranded, annotation, strandedness_script).counts
+    se_counts = QUANTIFY_SE(se_stranded, annotation, strandedness_script).counts
 
-    norm_pe = Normalization_PE(quant_pe)
-    norm_se = Normalization_SE(quant_se)
-    norm_out = norm_pe.mix(norm_se)
+    normalized_pe = NORMALIZE_PE(pe_counts, tpm_script).result
+    normalized_se = NORMALIZE_SE(se_counts, tpm_script).result
+    normalized = normalized_pe.mix(normalized_se)
 
-    all_normalized_files = norm_out
-    .map { sample_id, orientation, condition, norm_file, frag_len_file -> norm_file }
-    .collect()
-    .set { all_normalized_results }
+    normalized_files = normalized
+        .map { sample_id, layout, condition, normalized_file, metrics -> normalized_file }
+        .collect()
 
-    Mean_TPM(all_normalized_results)
+    MEAN_TPM(normalized_files, samplesheet, mean_tpm_script)
 
-    bam_grouped = mapped_bam
-    .map { sample_id, layout, condition, bam_path ->
-        tuple(condition, sample_id, bam_path)        // (key, value)
-    }
-    .groupTuple()
+    grouped_bams = mapped_bam
+        .map { sample_id, layout, condition, bam -> tuple(condition, sample_id, bam) }
+        .groupTuple()
 
-    BigWig(bam_grouped)
-
- }
+    BIGWIG(grouped_bams)
+}

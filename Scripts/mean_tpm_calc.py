@@ -1,59 +1,82 @@
+#!/usr/bin/env python3
+
+import argparse
+from pathlib import Path
+
 import pandas as pd
-from glob import glob
-from functools import reduce
 
-def mean_tpm_calc(datasets, outfile):
 
-    # Load all datasets
-    dfs = [pd.read_csv(file) for file in datasets]
+BASE_COLUMNS = ["Geneid", "Chr", "Start", "End", "Strand", "Length"]
+NORMALIZED_SUFFIX = "_normalized.results"
 
-    # Base columns to include only once
-    base_cols = ['Geneid', 'Chr', 'Start', 'End', 'Strand', 'Length']
 
-    # Extract base dataframe from the first dataset
-    df_base = dfs[0][base_cols].copy()
+def mean_tpm_calc(normalized_files, samplesheet, output_file):
+    metadata = pd.read_csv(samplesheet, dtype=str).fillna("")
+    required = {"sample_id", "condition"}
+    missing = required.difference(metadata.columns)
+    if missing:
+        raise ValueError(f"Sample sheet is missing columns: {', '.join(sorted(missing))}")
+    if metadata["sample_id"].duplicated().any():
+        duplicates = metadata.loc[metadata["sample_id"].duplicated(), "sample_id"]
+        raise ValueError(f"Duplicate sample_id values: {', '.join(duplicates)}")
 
-    # Now concatenate TPM and effective length (or any remaining columns) from each dataset
-    # You can rename columns to reflect their dataset origin
-    additional_dfs = []
-    for i, df in enumerate(dfs):
-        # Drop base columns
-        extra = df.drop(columns=base_cols + list(df.columns[df.columns.str.contains('.bam')]) + list(df.columns[df.columns.str.contains('Effective')]))
+    sample_to_condition = dict(zip(metadata["sample_id"], metadata["condition"]))
+    merged = None
+    condition_columns = {}
 
-        # Keep geneid for merging
-        extra.insert(0, 'Geneid', df['Geneid'])
+    for normalized_file in normalized_files:
+        filename = Path(normalized_file).name
+        if not filename.endswith(NORMALIZED_SUFFIX):
+            raise ValueError(f"Unexpected normalized filename: {filename}")
 
-        additional_dfs.append(extra)
+        sample_id = filename[: -len(NORMALIZED_SUFFIX)]
+        if sample_id not in sample_to_condition:
+            raise ValueError(f"Sample '{sample_id}' is absent from the sample sheet")
 
-    # Merge all additional dataframes on geneid
-    df_extra = reduce(lambda left, right: pd.merge(left, right, on='Geneid'), additional_dfs)
+        condition = sample_to_condition[sample_id]
+        tpm_column = f"{sample_id}_{condition}_TPM"
+        frame = pd.read_csv(normalized_file)
 
-    # Final combined dataframe
-    df_final = pd.merge(df_base[['Geneid', 'Chr','Start', 'End', 'Strand', 'Length']], df_extra, on='Geneid')
+        missing_base = set(BASE_COLUMNS).difference(frame.columns)
+        if missing_base:
+            raise ValueError(
+                f"{filename} is missing columns: {', '.join(sorted(missing_base))}"
+            )
+        if tpm_column not in frame.columns:
+            raise ValueError(f"{filename} is missing TPM column '{tpm_column}'")
 
-    conditions = [x.split('_')[1] for x in df_final.columns.tolist()[6:]]
-    samples_cols =  [x for x in df_final.columns.tolist()[6:]]
-
-    condition_and_sample = {}
-    for x in range(len(conditions)):
-        if conditions[x] not in condition_and_sample.keys():
-            condition_and_sample[conditions[x]] = [samples_cols[x]]
+        sample_frame = frame[BASE_COLUMNS + [tpm_column]].copy()
+        if merged is None:
+            merged = sample_frame
         else:
-            condition_and_sample[conditions[x]].append(samples_cols[x])
+            merged = merged.merge(
+                sample_frame[["Geneid", tpm_column]],
+                on="Geneid",
+                how="inner",
+                validate="one_to_one",
+            )
+        condition_columns.setdefault(condition, []).append(tpm_column)
 
-    df_mean_tpm_cond = pd.DataFrame({'Geneid':df_final['Geneid'], 'Chr':df_final['Chr'], 'Start':df_final['Start'], 'End':df_final['End'], 'Strand':df_final['Strand'], 'Length':df_final['Length']})
-    for cond in condition_and_sample:
-        df_mean_tpm_cond[cond] = df_final[condition_and_sample[cond]].mean(axis=1)
+    if merged is None:
+        raise ValueError("No normalized result files were supplied")
 
-    df_mean_tpm_cond.to_csv(outfile, index=False)
+    result = merged[BASE_COLUMNS].copy()
+    for condition, columns in condition_columns.items():
+        result[condition] = merged[columns].mean(axis=1)
+
+    result.to_csv(output_file, index=False)
 
 
-# Usage
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Calculate condition-level mean TPM from normalized samples"
+    )
+    parser.add_argument("normalized_files", nargs="+")
+    parser.add_argument("--samplesheet", required=True)
+    parser.add_argument("--output", required=True)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python mean_tpm_calc.py <file1> <file2> ... <outfile>")
-        sys.exit(1)
-
-    *datasets, outfile = sys.argv[1:]
-    mean_tpm_calc(datasets, outfile)
+    args = parse_args()
+    mean_tpm_calc(args.normalized_files, args.samplesheet, args.output)

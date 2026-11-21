@@ -6,6 +6,7 @@ work/
 # Pipeline outputs
 Omics/
 Expression/
+results/
 
 # Input data and large bioinformatics files
 *.fastq
@@ -22,6 +23,11 @@ Expression/
 *.fa.gz
 *.fna
 *.fna.gz
+
+# Keep the committed smoke-test fixtures.
+!tests/data/*.fastq
+!tests/data/*.fna
+!tests/data/*.fasta
 
 # Bowtie 2 indexes
 *.bt2

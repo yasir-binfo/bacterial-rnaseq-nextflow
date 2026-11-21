@@ -1,14 +1,16 @@
 # Run commands
 
-The supported command, sample-sheet schema, parameters, outputs, and current
-review findings are documented in [README.md](README.md#running-the-pipeline).
-
-From this directory, print the installed Nextflow version with:
+See [README.md](README.md#run) for the supported commands and parameters.
 
 ```bash
-nextflow -version
+nextflow run workflow.nf \
+  --datasets /absolute/path/samples.csv \
+  --ref_file /absolute/path/reference.fna \
+  --anno_file /absolute/path/annotation.gff \
+  --outdir results \
+  --skip_rrna true \
+  -resume
 ```
 
-Use `-resume` when restarting an interrupted or previously cached run. The
-workflow currently publishes to `Omics/Expression/`; `--outdir` is not
-implemented.
+The pinned Conda environment is enabled by default. Use `-profile no_conda`
+only when every required tool is already installed and available on `PATH`.
